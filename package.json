@@ -1,0 +1,20 @@
+{
+  "name": "galleri-nusantara",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplikasi rental pakaian adat Nusantara dengan pembayaran QRIS",
+  "scripts": {
+    "install-all": "npm install && npm --prefix server install && npm --prefix client install",
+    "server": "npm --prefix server run start",
+    "client": "npm --prefix client run dev",
+    "dev": "concurrently -k -n SERVER,CLIENT -c green,cyan \"npm:server\" \"npm:client\"",
+    "build": "npm --prefix server install && npm --prefix client install && npm --prefix client run build",
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
