@@ -37,9 +37,14 @@ export default function Navbar() {
               </button>
             </>
           ) : (
-            <Link className="btn-ghost" to="/admin">
-              Admin
-            </Link>
+            <>
+              <Link className="btn-primary" to="/">
+                Pelanggan
+              </Link>
+              <Link className="btn-ghost" to="/admin">
+                Admin
+              </Link>
+            </>
           )}
         </nav>
       </div>

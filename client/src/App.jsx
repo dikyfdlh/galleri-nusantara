@@ -58,7 +58,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <footer className="mt-16 border-t border-batik-100 py-8 text-center text-sm text-batik-500">
-        Galleri Nusantara — Rental Pakaian Adat Nusantara · Pembayaran QRIS
+        Galleri Nusantara - Rental Pakaian Adat Nusantara - 2026
       </footer>
     </div>
   );

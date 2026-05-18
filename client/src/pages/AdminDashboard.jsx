@@ -1,17 +1,29 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, rupiah, tanggal, hasAdminToken, clearAdminToken } from '../api.js';
+import {
+  api,
+  rupiah,
+  tanggal,
+  hasAdminToken,
+  clearAdminToken,
+  adminRole,
+} from '../api.js';
 import Carousel from '../components/Carousel.jsx';
 
-const TABS = [
+const ALL_TABS = [
   ['catalog', 'Katalog'],
   ['bookings', 'Pesanan'],
+  ['testimonials', 'Testimoni'],
+  ['admins', 'Akun Admin'],
   ['settings', 'Pengaturan'],
 ];
+// Manager: hanya kelola katalog, pesanan, testimoni.
+const MANAGER_TABS = ['catalog', 'bookings', 'testimonials'];
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const [tab, setTab] = useState('catalog');
+  const [role, setRole] = useState(adminRole());
   // 'checking' -> verifikasi token ke server; 'ok' -> tampilkan; 'denied' -> tendang
   const [auth, setAuth] = useState('checking');
 
@@ -23,12 +35,29 @@ export default function AdminDashboard() {
     }
     api
       .adminVerify()
-      .then(() => alive && setAuth('ok'))
+      .then((r) => {
+        if (!alive) return;
+        if (r && r.role) {
+          setRole(r.role);
+          localStorage.setItem('gn_admin_role', r.role);
+        }
+        setAuth('ok');
+      })
       .catch(() => alive && setAuth('denied'));
     return () => {
       alive = false;
     };
   }, []);
+
+  const tabs =
+    role === 'manager'
+      ? ALL_TABS.filter(([k]) => MANAGER_TABS.includes(k))
+      : ALL_TABS;
+
+  // Jaga: manager tidak boleh berada di tab terlarang.
+  useEffect(() => {
+    if (!tabs.some(([k]) => k === tab)) setTab('catalog');
+  }, [tabs, tab]);
 
   useEffect(() => {
     if (auth === 'denied') {
@@ -61,7 +90,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="no-scrollbar mt-5 flex gap-2 overflow-x-auto border-b border-batik-100">
-        {TABS.map(([k, label]) => (
+        {tabs.map(([k, label]) => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -79,7 +108,9 @@ export default function AdminDashboard() {
       <div className="mt-6">
         {tab === 'catalog' && <CatalogAdmin />}
         {tab === 'bookings' && <BookingsAdmin />}
-        {tab === 'settings' && <SettingsAdmin />}
+        {tab === 'testimonials' && <TestimonialsAdmin />}
+        {tab === 'admins' && role !== 'manager' && <AdminsTab role={role} />}
+        {tab === 'settings' && role !== 'manager' && <SettingsAdmin />}
       </div>
     </div>
   );
@@ -451,6 +482,7 @@ function CatalogAdmin() {
 /* ---------------- PESANAN ---------------- */
 function BookingsAdmin() {
   const [list, setList] = useState([]);
+  const [docFor, setDocFor] = useState(null); // pesanan yang sedang dibuat dokumentasinya
   const reload = useCallback(() => {
     api.bookings().then(setList).catch(() => {});
   }, []);
@@ -523,6 +555,19 @@ function BookingsAdmin() {
                 Tandai Dikembalikan
               </button>
             )}
+            {b.status === 'returned' &&
+              (b.testimonialId ? (
+                <span className="badge bg-green-100 text-green-700">
+                  ✓ Dokumentasi/Testimoni ditambahkan
+                </span>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={() => setDocFor(b)}
+                >
+                  📷 Tambah Dokumentasi/Testimoni
+                </button>
+              ))}
             {!['returned', 'cancelled', 'rejected'].includes(b.status) && (
               <button
                 className="btn-ghost text-red-600"
@@ -534,6 +579,601 @@ function BookingsAdmin() {
           </div>
         </div>
       ))}
+
+      {docFor && (
+        <DocModal
+          booking={docFor}
+          onClose={() => setDocFor(null)}
+          onSaved={() => {
+            setDocFor(null);
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* Form dokumentasi/testimoni untuk satu pesanan yang sudah selesai */
+function DocModal({ booking, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: booking.customer?.name || '',
+    origin: '',
+    rating: 5,
+    message: '',
+  });
+  const [photo, setPhoto] = useState(null);
+  const [anonymous, setAnonymous] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const MAX = 25 * 1024 * 1024;
+
+  function pickFile(e) {
+    const f = e.target.files[0] || null;
+    if (f && f.size > MAX) {
+      setErr('Ukuran file maksimal 25 MB.');
+      e.target.value = '';
+      setPhoto(null);
+      return;
+    }
+    setErr('');
+    setPhoto(f);
+  }
+
+  async function submit() {
+    if (!form.message.trim() && !photo)
+      return setErr('Isi testimoni atau unggah foto/video (minimal salah satu).');
+    if (photo && photo.size > MAX) return setErr('Ukuran file maksimal 25 MB.');
+    setBusy(true);
+    setErr('');
+    try {
+      await api.createBookingTestimonial(booking.id, {
+        ...form,
+        anonymous,
+        photo,
+      });
+      onSaved();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="card my-auto w-full max-w-lg p-4 sm:p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-batik-900">
+            Dokumentasi & Testimoni
+          </h2>
+          <button className="btn-ghost px-2 py-1 text-lg" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <p className="mb-4 text-xs text-batik-500">
+          Pesanan <b>{booking.code}</b> · {booking.productName} ·{' '}
+          {booking.customer?.name}
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="label">
+              Foto / Video dokumentasi (hasil sewa, maks 25 MB)
+            </label>
+            <input
+              type="file"
+              accept="image/*,video/*"
+              className="block w-full text-sm"
+              onChange={pickFile}
+            />
+            {photo && (
+              <p className="mt-1 text-xs text-batik-500">
+                {photo.name} · {(photo.size / 1048576).toFixed(1)} MB
+              </p>
+            )}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="label">Nama ditampilkan</label>
+              <input
+                className="input"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label">Asal / kota (opsional)</label>
+              <input
+                className="input"
+                value={form.origin}
+                onChange={(e) => setForm({ ...form, origin: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="label">Rating</label>
+            <select
+              className="input w-32"
+              value={form.rating}
+              onChange={(e) =>
+                setForm({ ...form, rating: parseInt(e.target.value, 10) })
+              }
+            >
+              {[5, 4, 3, 2, 1].map((n) => (
+                <option key={n} value={n}>
+                  {'★'.repeat(n)} ({n})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Testimoni pelanggan (opsional)</label>
+            <textarea
+              className="input min-h-[80px]"
+              placeholder="Tulis testimoni / catatan pelanggan…"
+              value={form.message}
+              onChange={(e) => setForm({ ...form, message: e.target.value })}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-batik-700">
+            <input
+              type="checkbox"
+              checked={anonymous}
+              onChange={(e) => setAnonymous(e.target.checked)}
+            />
+            Tampilkan sebagai <b>Anonim</b> (nama disamarkan di halaman pelanggan)
+          </label>
+          {err && (
+            <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {err}
+            </div>
+          )}
+          <button
+            className="btn-primary w-full"
+            disabled={busy}
+            onClick={submit}
+          >
+            {busy ? 'Menyimpan…' : 'Simpan & Tampilkan di Halaman Pelanggan'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- TESTIMONI ---------------- */
+function TestimonialsAdmin() {
+  const [list, setList] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [msg, setMsg] = useState('');
+
+  const reload = useCallback(() => {
+    api.testimonials(true).then(setList).catch(() => setList([]));
+  }, []);
+  useEffect(reload, [reload]);
+
+  const flash = (m) => {
+    setMsg(m);
+    setTimeout(() => setMsg(''), 2200);
+  };
+
+  async function saveEdit() {
+    try {
+      await api.updateTestimonial(editing.id, editing);
+      setEditing(null);
+      reload();
+      flash('Tersimpan.');
+    } catch (e) {
+      flash(e.message);
+    }
+  }
+
+  async function toggleActive(t) {
+    await api.updateTestimonial(t.id, { active: !t.active });
+    reload();
+  }
+
+  async function del(t) {
+    if (!confirm(`Hapus testimoni dari "${t.name}"?`)) return;
+    await api.deleteTestimonial(t.id);
+    reload();
+  }
+
+  const RatingInput = ({ value, onChange }) => (
+    <select
+      className="input w-28"
+      value={value}
+      onChange={(e) => onChange(parseInt(e.target.value, 10))}
+    >
+      {[5, 4, 3, 2, 1].map((n) => (
+        <option key={n} value={n}>
+          {'★'.repeat(n)} ({n})
+        </option>
+      ))}
+    </select>
+  );
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="rounded-xl border border-batik-100 bg-batik-50 px-4 py-3 text-sm text-batik-700">
+        Dokumentasi/testimoni <b>ditambahkan dari tab Pesanan</b> — pada tiap
+        pesanan yang sudah <b>selesai (dikembalikan)</b> ada tombol
+        “📷 Tambah Dokumentasi/Testimoni”. Di sini Anda mengelola yang sudah ada
+        (edit teks, sembunyikan, hapus). Yang aktif tampil di bawah form masuk
+        pelanggan.
+      </div>
+
+      {msg && (
+        <div className="rounded-lg bg-batik-50 px-3 py-2 text-sm text-batik-700">
+          {msg}
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <h2 className="font-bold text-batik-900">
+          Daftar Testimoni ({list.length})
+        </h2>
+        {list.length === 0 && (
+          <p className="text-sm text-batik-500">Belum ada testimoni.</p>
+        )}
+        {list.map((t) => (
+          <div key={t.id} className="card p-4">
+            {editing?.id === t.id ? (
+              <div className="space-y-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    className="input"
+                    value={editing.name}
+                    onChange={(e) =>
+                      setEditing({ ...editing, name: e.target.value })
+                    }
+                  />
+                  <input
+                    className="input"
+                    placeholder="Asal / kota"
+                    value={editing.origin}
+                    onChange={(e) =>
+                      setEditing({ ...editing, origin: e.target.value })
+                    }
+                  />
+                </div>
+                <RatingInput
+                  value={editing.rating}
+                  onChange={(r) => setEditing({ ...editing, rating: r })}
+                />
+                <textarea
+                  className="input min-h-[70px]"
+                  value={editing.message}
+                  onChange={(e) =>
+                    setEditing({ ...editing, message: e.target.value })
+                  }
+                />
+                <label className="flex items-center gap-2 text-sm text-batik-700">
+                  <input
+                    type="checkbox"
+                    checked={!!editing.anonymous}
+                    onChange={(e) =>
+                      setEditing({ ...editing, anonymous: e.target.checked })
+                    }
+                  />
+                  Tampilkan sebagai Anonim
+                </label>
+                <div className="flex gap-2">
+                  <button className="btn-primary flex-1" onClick={saveEdit}>
+                    Simpan
+                  </button>
+                  <button
+                    className="btn-outline"
+                    onClick={() => setEditing(null)}
+                  >
+                    Batal
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 gap-3">
+                  {t.video ? (
+                    <video
+                      src={t.video}
+                      controls
+                      preload="metadata"
+                      className="h-20 w-20 shrink-0 rounded-lg bg-black object-cover"
+                    />
+                  ) : (
+                    t.image && (
+                      <img
+                        src={t.image}
+                        alt=""
+                        className="h-20 w-20 shrink-0 rounded-lg object-cover"
+                      />
+                    )
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-batik-400">
+                      {'★'.repeat(t.rating || 5)}
+                      <span className="text-batik-200">
+                        {'★'.repeat(5 - (t.rating || 5))}
+                      </span>
+                    </div>
+                    {t.message && (
+                      <p className="mt-1 text-batik-700">“{t.message}”</p>
+                    )}
+                    <div className="mt-1 text-sm font-semibold text-batik-900">
+                      {t.name}
+                      {t.origin && (
+                        <span className="font-normal text-batik-500">
+                          {' '}
+                          · {t.origin}
+                        </span>
+                      )}
+                      {t.anonymous && (
+                        <span className="badge ml-2 bg-batik-100 text-batik-700">
+                          Anonim
+                        </span>
+                      )}
+                      {t.active === false && (
+                        <span className="badge ml-2 bg-gray-200 text-gray-600">
+                          Disembunyikan
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-batik-500">
+                      {t.productName}
+                      {t.bookingCode ? ` · ${t.bookingCode}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-col gap-1">
+                  <button
+                    className="btn-ghost text-sm"
+                    onClick={() => setEditing({ ...t })}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="btn-ghost text-sm"
+                    onClick={() => toggleActive(t)}
+                  >
+                    {t.active === false ? 'Tampilkan' : 'Sembunyikan'}
+                  </button>
+                  <button
+                    className="btn-ghost text-sm text-red-600"
+                    onClick={() => del(t)}
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- AKUN ADMIN ---------------- */
+const ROLE_LABEL = {
+  superadmin: ['SuperAdmin', 'bg-red-100 text-red-700'],
+  admin: ['Admin', 'bg-batik-100 text-batik-700'],
+  manager: ['Manager', 'bg-blue-100 text-blue-700'],
+};
+
+function AdminsTab({ role }) {
+  const isSuper = role === 'superadmin';
+  const [list, setList] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const [reveal, setReveal] = useState({});
+  const [form, setForm] = useState({
+    username: '',
+    password: '',
+    role: isSuper ? 'manager' : 'manager',
+  });
+
+  const reload = useCallback(() => {
+    api
+      .admins()
+      .then((r) => setList(r.admins || []))
+      .catch((e) => setMsg({ t: 'err', m: e.message }));
+  }, []);
+  useEffect(reload, [reload]);
+
+  const flash = (t, m) => {
+    setMsg({ t, m });
+    setTimeout(() => setMsg(null), 2500);
+  };
+
+  async function add() {
+    try {
+      await api.createAdmin(form);
+      setForm({ username: '', password: '', role: 'manager' });
+      reload();
+      flash('ok', 'Akun dibuat.');
+    } catch (e) {
+      flash('err', e.message);
+    }
+  }
+  async function resetPw(a) {
+    const np = window.prompt(`Password baru untuk "${a.username}" (min 6 karakter):`);
+    if (np == null) return;
+    try {
+      await api.updateAdmin(a.id, { password: np });
+      reload();
+      flash('ok', 'Password diperbarui.');
+    } catch (e) {
+      flash('err', e.message);
+    }
+  }
+  async function changeRole(a, newRole) {
+    try {
+      await api.updateAdmin(a.id, { role: newRole });
+      reload();
+      flash('ok', 'Peran diperbarui.');
+    } catch (e) {
+      flash('err', e.message);
+    }
+  }
+  async function del(a) {
+    if (!window.confirm(`Hapus akun "${a.username}"?`)) return;
+    try {
+      await api.deleteAdmin(a.id);
+      reload();
+      flash('ok', 'Akun dihapus.');
+    } catch (e) {
+      flash('err', e.message);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="rounded-xl border border-batik-100 bg-batik-50 px-4 py-3 text-sm text-batik-700">
+        {isSuper ? (
+          <>
+            Anda <b>SuperAdmin</b>: dapat melihat & mengatur semua akun
+            termasuk password. Akun SuperAdmin tidak terlihat oleh Admin biasa.
+          </>
+        ) : (
+          <>
+            Anda <b>Admin</b>: bisa menambah akun <b>Manager</b> (akses katalog,
+            pesanan, testimoni). Password akun lain terenkripsi & tidak dapat
+            dilihat.
+          </>
+        )}
+      </div>
+
+      <div className="card p-5">
+        <h2 className="mb-3 font-bold text-batik-900">Tambah Akun</h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="label">Username</label>
+            <input
+              className="input"
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="label">Password (min 6)</label>
+            <input
+              className="input"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="label">Peran</label>
+            {isSuper ? (
+              <select
+                className="input"
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value })}
+              >
+                <option value="manager">Manager (katalog/pesanan/testimoni)</option>
+                <option value="admin">Admin (semua kecuali SuperAdmin)</option>
+                <option value="superadmin">SuperAdmin</option>
+              </select>
+            ) : (
+              <input className="input" value="Manager" disabled />
+            )}
+          </div>
+        </div>
+        <button className="btn-primary mt-4 w-full" onClick={add}>
+          + Tambah Akun
+        </button>
+      </div>
+
+      {msg && (
+        <div
+          className={`rounded-lg px-3 py-2 text-sm ${
+            msg.t === 'ok'
+              ? 'bg-green-50 text-green-700'
+              : 'bg-red-50 text-red-700'
+          }`}
+        >
+          {msg.m}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <h2 className="font-bold text-batik-900">Daftar Akun ({list.length})</h2>
+        {list.map((a) => {
+          const [rl, rc] = ROLE_LABEL[a.role] || [a.role, 'bg-gray-100'];
+          return (
+            <div
+              key={a.id}
+              className="card flex flex-wrap items-center justify-between gap-3 p-4"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-batik-900">
+                    {a.username}
+                  </span>
+                  <span className={`badge ${rc}`}>{rl}</span>
+                  {a.system && (
+                    <span className="badge bg-gray-100 text-gray-600">
+                      Bawaan
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 font-mono text-sm text-batik-700">
+                  {a.passwordHidden
+                    ? '•••••••• (terenkripsi)'
+                    : reveal[a.id]
+                      ? a.password ?? '(tidak tersedia)'
+                      : '•••••••• '}
+                  {!a.passwordHidden && a.password != null && (
+                    <button
+                      className="ml-2 text-xs text-batik-500 underline"
+                      onClick={() =>
+                        setReveal((r) => ({ ...r, [a.id]: !r[a.id] }))
+                      }
+                    >
+                      {reveal[a.id] ? 'sembunyikan' : 'lihat'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-1">
+                {!a.system && (
+                  <button
+                    className="btn-ghost text-sm"
+                    onClick={() => resetPw(a)}
+                  >
+                    Reset Password
+                  </button>
+                )}
+                {isSuper && !a.system && (
+                  <select
+                    className="rounded-md border border-batik-200 px-2 text-sm"
+                    value={a.role}
+                    onChange={(e) => changeRole(a, e.target.value)}
+                  >
+                    <option value="manager">Manager</option>
+                    <option value="admin">Admin</option>
+                    <option value="superadmin">SuperAdmin</option>
+                  </select>
+                )}
+                {!a.system && (
+                  <button
+                    className="btn-ghost text-sm text-red-600"
+                    onClick={() => del(a)}
+                  >
+                    Hapus
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -934,6 +1574,8 @@ function SettingsAdmin() {
         businessName: s.businessName,
         dpPercent: s.dpPercent,
         pickupOffsetDays: s.pickupOffsetDays,
+        address: s.address,
+        mapQuery: s.mapQuery,
       });
       setMsg('Pengaturan disimpan.');
       setTimeout(() => setMsg(''), 2000);
@@ -960,6 +1602,28 @@ function SettingsAdmin() {
             value={s.businessName || ''}
             onChange={(e) => setS({ ...s, businessName: e.target.value })}
           />
+        </div>
+        <div>
+          <label className="label">Alamat toko</label>
+          <textarea
+            className="input min-h-[64px]"
+            placeholder="cth. Jl. Mawar No. 1, Cimahi, Jawa Barat"
+            value={s.address || ''}
+            onChange={(e) => setS({ ...s, address: e.target.value })}
+          />
+        </div>
+        <div>
+          <label className="label">Lokasi peta (Google Maps)</label>
+          <input
+            className="input"
+            placeholder="Alamat lengkap atau koordinat -6.8721,107.5421"
+            value={s.mapQuery || ''}
+            onChange={(e) => setS({ ...s, mapQuery: e.target.value })}
+          />
+          <p className="mt-1 text-xs text-batik-400">
+            Tempel alamat lengkap atau koordinat (lat,long). Peta tampil di
+            halaman masuk pelanggan, di bawah testimoni. Tanpa API key.
+          </p>
         </div>
         <div>
           <label className="label">Persentase DP (%)</label>

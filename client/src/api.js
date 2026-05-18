@@ -56,6 +56,33 @@ export const api = {
   settle: (id) => request('POST', `/bookings/${id}/settle`),
   verify: (id) => request('POST', `/bookings/${id}/verify`),
   setStatus: (id, status) => request('POST', `/bookings/${id}/status`, { status }),
+  rateBooking: (id, { customerId, rating, message, anonymous, media }) => {
+    const fd = new FormData();
+    fd.append('customerId', customerId);
+    fd.append('rating', String(rating || 5));
+    if (message) fd.append('message', message);
+    fd.append('anonymous', anonymous ? 'true' : 'false');
+    if (media) fd.append('media', media);
+    return request('POST', `/bookings/${id}/rating`, fd, true);
+  },
+
+  // testimoni / dokumentasi pesanan selesai
+  testimonials: (all) => request('GET', `/testimonials${all ? '?all=1' : ''}`),
+  createBookingTestimonial: (
+    bookingId,
+    { name, origin, rating, message, anonymous, photo }
+  ) => {
+    const fd = new FormData();
+    if (name) fd.append('name', name);
+    if (origin) fd.append('origin', origin);
+    fd.append('rating', String(rating || 5));
+    if (message) fd.append('message', message);
+    fd.append('anonymous', anonymous ? 'true' : 'false');
+    if (photo) fd.append('photo', photo);
+    return request('POST', `/bookings/${bookingId}/testimonial`, fd, true);
+  },
+  updateTestimonial: (id, t) => request('PUT', `/testimonials/${id}`, t),
+  deleteTestimonial: (id) => request('DELETE', `/testimonials/${id}`),
 
   // settings / auth
   settings: () => request('GET', '/settings'),
@@ -66,7 +93,11 @@ export const api = {
     return request('POST', '/settings/qris-image', fd, true);
   },
   removeQrisImage: () => request('DELETE', '/settings/qris-image'),
-  adminLogin: (password) => request('POST', '/admin/login', { password }),
+  adminLogin: async (password) => {
+    const r = await request('POST', '/admin/login', { password });
+    if (r && r.role) localStorage.setItem('gn_admin_role', r.role);
+    return r;
+  },
   adminVerify: () => request('GET', '/admin/verify'),
   changePassword: async (currentPassword, newPassword) => {
     const r = await request('POST', '/admin/password', { currentPassword, newPassword });
@@ -74,14 +105,25 @@ export const api = {
     if (r && r.token) localStorage.setItem('gn_admin_token', r.token);
     return r;
   },
+
+  // manajemen akun admin
+  admins: () => request('GET', '/admins'),
+  createAdmin: (a) => request('POST', '/admins', a),
+  updateAdmin: (id, a) => request('PUT', `/admins/${id}`, a),
+  deleteAdmin: (id) => request('DELETE', `/admins/${id}`),
 };
 
 export function hasAdminToken() {
   return !!localStorage.getItem('gn_admin_token');
 }
 
+export function adminRole() {
+  return localStorage.getItem('gn_admin_role') || '';
+}
+
 export function clearAdminToken() {
   localStorage.removeItem('gn_admin_token');
+  localStorage.removeItem('gn_admin_role');
 }
 
 export function rupiah(n) {

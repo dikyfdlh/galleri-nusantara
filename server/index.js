@@ -39,6 +39,36 @@ const upload = multer({
   fileFilter: (req, file, cb) => cb(null, /image\/(png|jpe?g|webp|gif)/.test(file.mimetype)),
 });
 
+// Untuk testimoni/rating: gambar ATAU video, maksimal 25 MB.
+const MEDIA_MAX = 25 * 1024 * 1024;
+const mediaUpload = multer({
+  storage,
+  limits: { fileSize: MEDIA_MAX },
+  fileFilter: (req, file, cb) =>
+    cb(null, /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype)),
+});
+
+/** Samarkan nama: pertahankan huruf awal & akhir tiap kata. */
+function maskName(name) {
+  return String(name || '')
+    .trim()
+    .split(/\s+/)
+    .map((w) => {
+      if (w.length <= 2) return w;
+      return w[0] + '*'.repeat(w.length - 2) + w[w.length - 1];
+    })
+    .join(' ');
+}
+
+/** Klasifikasi file unggahan -> { image, video } path. */
+function mediaPaths(file) {
+  if (!file) return { image: '', video: '' };
+  const url = `/uploads/${file.filename}`;
+  return /^video\//.test(file.mimetype)
+    ? { image: '', video: url }
+    : { image: url, video: '' };
+}
+
 // ---- Admin auth ----
 // Token stateless = HMAC(ADMIN_SECRET, materi-password-efektif).
 // Password efektif: hash tersimpan di db (bila admin pernah ganti via panel),
@@ -75,38 +105,124 @@ function secretMaterial(db) {
   return stored ? 'hash:' + stored : 'env:' + ADMIN_PASSWORD;
 }
 
-function currentToken(db) {
-  return crypto
-    .createHmac('sha256', ADMIN_SECRET)
-    .update('gn-admin:' + secretMaterial(db))
-    .digest('hex');
-}
-
 function verifyPassword(db, input) {
   const stored = db.settings && db.settings.adminPasswordHash;
   if (stored) return verifyAgainstHash(input, stored);
   return timingSafeEqual(input, ADMIN_PASSWORD);
 }
 
+// ---- Enkripsi reversibel (AES-256-GCM) untuk password akun admin ----
+// Catatan: password akun admin disimpan terenkripsi (bukan hash) KARENA fitur
+// menuntut SuperAdmin bisa melihat password admin lain. Kunci diturunkan dari
+// ADMIN_SECRET; pastikan ADMIN_SECRET kuat & rahasia.
+const ENC_KEY = crypto.createHash('sha256').update('gn-enc:' + ADMIN_SECRET).digest();
+function encSecret(plain) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const e = Buffer.concat([c.update(String(plain), 'utf8'), c.final()]);
+  return 'v1:' + Buffer.concat([iv, c.getAuthTag(), e]).toString('base64');
+}
+function decSecret(blob) {
+  try {
+    const raw = Buffer.from(String(blob).replace(/^v1:/, ''), 'base64');
+    const d = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, raw.subarray(0, 12));
+    d.setAuthTag(raw.subarray(12, 28));
+    return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+const SUPERADMIN_PASSWORD = '@TropisantaraGalleri';
+
+/** Pastikan akun SuperAdmin terselubung ada (di-seed sekali). */
+function ensureSuperadmin(db) {
+  if (!Array.isArray(db.admins)) db.admins = [];
+  if (!db.admins.some((a) => a.role === 'superadmin')) {
+    db.admins.push({
+      id: 'super',
+      username: 'superadmin',
+      role: 'superadmin',
+      password: encSecret(SUPERADMIN_PASSWORD),
+      createdAt: new Date().toISOString(),
+    });
+    save();
+  }
+}
+
+/** Sidik token sebuah akun: berubah bila password akun berubah. */
+function tokenFingerprint(db, role, accId) {
+  if (accId === 'default') return secretMaterial(db);
+  const a = (db.admins || []).find((x) => x.id === accId);
+  return a
+    ? crypto.createHash('sha256').update(String(a.password)).digest('hex')
+    : 'none';
+}
+function makeToken(db, role, accId) {
+  const h = crypto
+    .createHmac('sha256', ADMIN_SECRET)
+    .update(['gn2', role, accId, tokenFingerprint(db, role, accId)].join('|'))
+    .digest('hex');
+  return [role, accId, h].join('.');
+}
+/** -> { role, id } valid, atau null. */
+function parseToken(db, token) {
+  if (!token) return null;
+  const parts = String(token).split('.');
+  if (parts.length !== 3) return null;
+  const [role, accId, h] = parts;
+  const expect = crypto
+    .createHmac('sha256', ADMIN_SECRET)
+    .update(['gn2', role, accId, tokenFingerprint(db, role, accId)].join('|'))
+    .digest('hex');
+  if (!timingSafeEqual(h, expect)) return null;
+  if (accId === 'default') return role === 'admin' ? { role: 'admin', id: 'default' } : null;
+  const a = (db.admins || []).find((x) => x.id === accId);
+  if (!a || a.role !== role) return null;
+  return { role: a.role, id: a.id };
+}
+
+/** Staf mana pun yang login (manager/admin/superadmin). */
 function requireAdmin(req, res, next) {
-  const db = load();
-  const t = req.headers['x-admin-token'];
-  if (t && timingSafeEqual(t, currentToken(db))) return next();
-  return res.status(401).json({ error: 'Akses admin diperlukan' });
+  const p = parseToken(load(), req.headers['x-admin-token']);
+  if (!p) return res.status(401).json({ error: 'Akses admin diperlukan' });
+  req.admin = p;
+  next();
+}
+/** Hanya admin & superadmin (manager ditolak). */
+function requirePriv(req, res, next) {
+  const p = parseToken(load(), req.headers['x-admin-token']);
+  if (!p) return res.status(401).json({ error: 'Akses admin diperlukan' });
+  if (p.role === 'manager')
+    return res.status(403).json({ error: 'Akses khusus admin' });
+  req.admin = p;
+  next();
 }
 
 app.post('/api/admin/login', (req, res) => {
   const db = load();
   const password = (req.body && req.body.password) || '';
-  if (verifyPassword(db, password)) return res.json({ token: currentToken(db) });
+  // Akun di db.admins (superadmin/admin/manager) — cocokkan password terdekripsi
+  const acc = (db.admins || []).find((a) => decSecret(a.password) === password);
+  if (acc)
+    return res.json({ token: makeToken(db, acc.role, acc.id), role: acc.role });
+  // Admin utama (legacy: ADMIN_PASSWORD / hash di settings)
+  if (verifyPassword(db, password))
+    return res.json({ token: makeToken(db, 'admin', 'default'), role: 'admin' });
   res.status(401).json({ error: 'Password salah' });
 });
 
-// Verifikasi token admin (dipakai dashboard sebelum menampilkan apa pun).
-app.get('/api/admin/verify', requireAdmin, (req, res) => res.json({ ok: true }));
+// Verifikasi token (dipakai dashboard sebelum menampilkan apa pun) + role.
+app.get('/api/admin/verify', requireAdmin, (req, res) =>
+  res.json({ ok: true, role: req.admin.role })
+);
 
-// Ganti password admin (disimpan ter-hash di db). Token ikut berputar.
-app.post('/api/admin/password', requireAdmin, (req, res) => {
+// Ganti password Admin Utama (legacy, tersimpan ter-hash). Token ikut berputar.
+app.post('/api/admin/password', requirePriv, (req, res) => {
+  if (req.admin.id !== 'default')
+    return res.status(400).json({
+      error: 'Gunakan menu Akun Admin untuk mengganti password akun ini',
+    });
   const db = load();
   const { currentPassword, newPassword } = req.body || {};
   if (!verifyPassword(db, currentPassword || ''))
@@ -118,8 +234,112 @@ app.post('/api/admin/password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Password baru harus berbeda' });
   db.settings.adminPasswordHash = hashPassword(np);
   save();
-  // Kembalikan token baru agar sesi admin tetap aktif tanpa login ulang.
-  res.json({ ok: true, token: currentToken(db) });
+  res.json({ ok: true, token: makeToken(db, 'admin', 'default') });
+});
+
+// ---- Manajemen Akun Admin ----
+app.get('/api/admins', requirePriv, (req, res) => {
+  const db = load();
+  const isSuper = req.admin.role === 'superadmin';
+  const customized = !!(db.settings && db.settings.adminPasswordHash);
+  const rows = [
+    {
+      id: 'default',
+      username: 'Admin Utama',
+      role: 'admin',
+      system: true,
+      password: isSuper && !customized ? ADMIN_PASSWORD : null,
+      passwordHidden: !isSuper || customized,
+    },
+  ];
+  for (const a of db.admins || []) {
+    if (a.role === 'superadmin' && !isSuper) continue; // SuperAdmin terselubung
+    rows.push({
+      id: a.id,
+      username: a.username,
+      role: a.role,
+      system: false,
+      password: isSuper ? decSecret(a.password) : null,
+      passwordHidden: !isSuper,
+      createdAt: a.createdAt,
+    });
+  }
+  res.json({ role: req.admin.role, admins: rows });
+});
+
+app.post('/api/admins', requirePriv, (req, res) => {
+  const db = load();
+  const b = req.body || {};
+  const username = String(b.username || '').trim();
+  const password = String(b.password || '');
+  const role = String(b.role || 'manager');
+  const allowed =
+    req.admin.role === 'superadmin'
+      ? ['manager', 'admin', 'superadmin']
+      : ['manager'];
+  if (!allowed.includes(role))
+    return res.status(403).json({ error: 'Anda tidak boleh membuat peran itu' });
+  if (username.length < 3)
+    return res.status(400).json({ error: 'Username minimal 3 karakter' });
+  if (password.length < 6)
+    return res.status(400).json({ error: 'Password minimal 6 karakter' });
+  if (!Array.isArray(db.admins)) db.admins = [];
+  if (
+    username.toLowerCase() === 'admin utama' ||
+    db.admins.some((a) => a.username.toLowerCase() === username.toLowerCase())
+  )
+    return res.status(400).json({ error: 'Username sudah dipakai' });
+  const acc = {
+    id: id(),
+    username,
+    role,
+    password: encSecret(password),
+    createdAt: new Date().toISOString(),
+  };
+  db.admins.push(acc);
+  save();
+  res.json({ id: acc.id, username: acc.username, role: acc.role });
+});
+
+app.put('/api/admins/:id', requirePriv, (req, res) => {
+  const db = load();
+  const a = (db.admins || []).find((x) => x.id === req.params.id);
+  if (!a) return res.status(404).json({ error: 'Akun tidak ditemukan' });
+  const isSuper = req.admin.role === 'superadmin';
+  if (a.role === 'superadmin' && !isSuper)
+    return res.status(404).json({ error: 'Akun tidak ditemukan' });
+  const b = req.body || {};
+  if (b.password !== undefined) {
+    if (String(b.password).length < 6)
+      return res.status(400).json({ error: 'Password minimal 6 karakter' });
+    a.password = encSecret(String(b.password));
+  }
+  if (b.role !== undefined) {
+    const allowed = isSuper ? ['manager', 'admin', 'superadmin'] : ['manager'];
+    if (!allowed.includes(b.role))
+      return res.status(403).json({ error: 'Tidak boleh mengubah ke peran itu' });
+    a.role = b.role;
+  }
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/admins/:id', requirePriv, (req, res) => {
+  const db = load();
+  const idx = (db.admins || []).findIndex((x) => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Akun tidak ditemukan' });
+  const a = db.admins[idx];
+  const isSuper = req.admin.role === 'superadmin';
+  if (a.role === 'superadmin') {
+    if (!isSuper) return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    if (db.admins.filter((x) => x.role === 'superadmin').length <= 1)
+      return res.status(400).json({ error: 'Minimal harus ada 1 SuperAdmin' });
+  } else if (!isSuper && a.role !== 'manager') {
+    return res.status(403).json({ error: 'Anda hanya boleh menghapus akun manager' });
+  }
+  db.admins.splice(idx, 1);
+  save();
+  res.json({ ok: true });
 });
 
 // =================== CUSTOMERS ===================
@@ -587,6 +807,148 @@ app.post('/api/bookings/:id/status', requireAdmin, (req, res) => {
   res.json(b);
 });
 
+// =================== TESTIMONI ===================
+// Publik: hanya testimoni aktif (untuk ditampilkan di halaman pelanggan).
+app.get('/api/testimonials', (req, res) => {
+  const db = load();
+  const all = req.query.all === '1';
+  const items = (db.testimonials || []).slice().reverse();
+  if (all) {
+    // daftar lengkap (nama asli) hanya untuk staf yang login
+    if (!parseToken(db, req.headers['x-admin-token']))
+      return res.status(401).json({ error: 'Akses admin diperlukan' });
+    return res.json(items);
+  }
+  // publik: hanya yang aktif; nama disamarkan bila anonim
+  const list = items
+    .filter((t) => t.active !== false)
+    .map((t) => ({ ...t, name: t.anonymous ? maskName(t.name) : t.name }));
+  res.json(list);
+});
+
+// Tambah dokumentasi/testimoni dari sebuah PESANAN yang sudah SELESAI
+// (status "returned"). Foto opsional. Dipanggil dari tombol di tab Pesanan.
+app.post(
+  '/api/bookings/:id/testimonial',
+  requireAdmin,
+  mediaUpload.single('photo'),
+  (req, res) => {
+    const db = load();
+    const bk = db.bookings.find((x) => x.id === req.params.id);
+    if (!bk) return res.status(404).json({ error: 'Pesanan tidak ditemukan' });
+    if (bk.status !== 'returned')
+      return res
+        .status(400)
+        .json({ error: 'Hanya untuk pesanan yang sudah selesai (dikembalikan)' });
+    if (!Array.isArray(db.testimonials)) db.testimonials = [];
+    if (bk.testimonialId && db.testimonials.some((t) => t.id === bk.testimonialId))
+      return res
+        .status(400)
+        .json({ error: 'Pesanan ini sudah punya dokumentasi/testimoni' });
+
+    const b = req.body || {};
+    const message = String(b.message || '').trim();
+    const { image, video } = mediaPaths(req.file);
+    if (!message && !image && !video)
+      return res
+        .status(400)
+        .json({ error: 'Isi testimoni atau unggah foto/video dokumentasi minimal salah satu' });
+
+    const t = {
+      id: id(),
+      bookingId: bk.id,
+      bookingCode: bk.code,
+      name: String(b.name || '').trim() || bk.customer.name || 'Pelanggan',
+      origin: String(b.origin || '').trim(),
+      productName: bk.productName,
+      rating: Math.min(5, Math.max(1, parseInt(b.rating, 10) || 5)),
+      message,
+      image,
+      video,
+      anonymous: b.anonymous === true || b.anonymous === 'true',
+      active: b.active !== false && b.active !== 'false',
+      createdAt: new Date().toISOString(),
+    };
+    db.testimonials.push(t);
+    bk.testimonialId = t.id;
+    save();
+    res.json(t);
+  }
+);
+
+// Pelanggan memberi rating + ulasan untuk PESANANNYA yang sudah selesai.
+// Tanpa token admin; diverifikasi lewat kepemilikan (customerId).
+app.post(
+  '/api/bookings/:id/rating',
+  mediaUpload.single('media'),
+  (req, res) => {
+    const db = load();
+    const bk = db.bookings.find((x) => x.id === req.params.id);
+    if (!bk) return res.status(404).json({ error: 'Pesanan tidak ditemukan' });
+    const b = req.body || {};
+    const { customerId, rating, message } = b;
+    if (!customerId || bk.customerId !== customerId)
+      return res.status(403).json({ error: 'Pesanan ini bukan milik Anda' });
+    if (bk.status !== 'returned')
+      return res
+        .status(400)
+        .json({ error: 'Rating hanya untuk pesanan yang sudah selesai' });
+    if (!Array.isArray(db.testimonials)) db.testimonials = [];
+    if (bk.testimonialId && db.testimonials.some((t) => t.id === bk.testimonialId))
+      return res.status(400).json({ error: 'Pesanan ini sudah dinilai' });
+
+    const { image, video } = mediaPaths(req.file);
+    const t = {
+      id: id(),
+      bookingId: bk.id,
+      bookingCode: bk.code,
+      name: bk.customer.name || 'Pelanggan',
+      origin: '',
+      productName: bk.productName,
+      rating: Math.min(5, Math.max(1, parseInt(rating, 10) || 5)),
+      message: String(message || '').trim(),
+      image,
+      video,
+      anonymous: b.anonymous === true || b.anonymous === 'true',
+      active: true,
+      source: 'customer',
+      createdAt: new Date().toISOString(),
+    };
+    db.testimonials.push(t);
+    bk.testimonialId = t.id;
+    save();
+    res.json(t);
+  }
+);
+
+app.put('/api/testimonials/:id', requireAdmin, (req, res) => {
+  const db = load();
+  const t = (db.testimonials || []).find((x) => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Testimoni tidak ditemukan' });
+  const b = req.body || {};
+  if (b.name !== undefined) t.name = String(b.name).trim() || 'Anonim';
+  if (b.origin !== undefined) t.origin = String(b.origin).trim();
+  if (b.rating !== undefined)
+    t.rating = Math.min(5, Math.max(1, parseInt(b.rating, 10) || 5));
+  if (b.message !== undefined) t.message = String(b.message).trim();
+  if (b.anonymous !== undefined) t.anonymous = !!b.anonymous;
+  if (b.active !== undefined) t.active = !!b.active;
+  save();
+  res.json(t);
+});
+
+app.delete('/api/testimonials/:id', requireAdmin, (req, res) => {
+  const db = load();
+  const i = (db.testimonials || []).findIndex((x) => x.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'Testimoni tidak ditemukan' });
+  const [removed] = db.testimonials.splice(i, 1);
+  // lepaskan kaitan dari pesanan agar bisa dibuat ulang
+  const bk = db.bookings.find((x) => x.testimonialId === removed.id);
+  if (bk) delete bk.testimonialId;
+  save();
+  res.json({ ok: true });
+});
+
 // =================== SETTINGS ===================
 function publicSettings(db) {
   const { adminPasswordHash, ...rest } = db.settings || {};
@@ -602,7 +964,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-app.put('/api/settings', requireAdmin, (req, res) => {
+app.put('/api/settings', requirePriv, (req, res) => {
   const db = load();
   const b = req.body || {};
   if (b.dpPercent !== undefined)
@@ -610,6 +972,8 @@ app.put('/api/settings', requireAdmin, (req, res) => {
   if (b.pickupOffsetDays !== undefined)
     db.settings.pickupOffsetDays = Math.max(0, parseInt(b.pickupOffsetDays, 10) || 1);
   if (b.businessName !== undefined) db.settings.businessName = String(b.businessName).trim();
+  if (b.address !== undefined) db.settings.address = String(b.address).slice(0, 500);
+  if (b.mapQuery !== undefined) db.settings.mapQuery = String(b.mapQuery).trim().slice(0, 300);
 
   if (b.payment && typeof b.payment === 'object') {
     const pin = b.payment;
@@ -644,7 +1008,7 @@ app.put('/api/settings', requireAdmin, (req, res) => {
 });
 
 // Unggah / hapus foto QRIS statis (admin).
-app.post('/api/settings/qris-image', requireAdmin, upload.single('image'), (req, res) => {
+app.post('/api/settings/qris-image', requirePriv, upload.single('image'), (req, res) => {
   const db = load();
   if (!req.file) return res.status(400).json({ error: 'File gambar tidak ada' });
   if (!db.settings.payment) db.settings.payment = {};
@@ -653,11 +1017,23 @@ app.post('/api/settings/qris-image', requireAdmin, upload.single('image'), (req,
   res.json(publicSettings(db));
 });
 
-app.delete('/api/settings/qris-image', requireAdmin, (req, res) => {
+app.delete('/api/settings/qris-image', requirePriv, (req, res) => {
   const db = load();
   if (db.settings.payment) db.settings.payment.qrisImage = '';
   save();
   res.json(publicSettings(db));
+});
+
+// ---- Penanganan error unggahan (Multer) ----
+app.use((err, req, res, next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE')
+    return res
+      .status(413)
+      .json({ error: 'Ukuran file terlalu besar. Maksimal 25 MB.' });
+  if (err && err.name === 'MulterError')
+    return res.status(400).json({ error: `Gagal unggah: ${err.message}` });
+  if (err) return res.status(500).json({ error: err.message || 'Kesalahan server' });
+  next();
 });
 
 // ---- Serve client build bila ada (mode produksi) ----
@@ -666,6 +1042,8 @@ if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
   app.get('*', (req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')));
 }
+
+ensureSuperadmin(load());
 
 app.listen(PORT, () => {
   console.log(`\n  Galleri Nusantara API berjalan di http://localhost:${PORT}`);

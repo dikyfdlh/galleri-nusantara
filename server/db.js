@@ -157,10 +157,13 @@ function defaultData() {
     products: seedProducts(),
     customers: [],
     bookings: [],
+    testimonials: [], // [{ id, name, origin, rating, message, active, createdAt }]
     settings: {
       dpPercent: Number(process.env.DEFAULT_DP_PERCENT || 50),
       pickupOffsetDays: 1, // pengambilan = tanggal lunas/DP + 1 hari
       businessName: 'Galleri Nusantara',
+      address: '', // alamat toko (teks ditampilkan di halaman masuk)
+      mapQuery: '', // alamat / "lat,long" untuk peta Google (embed)
       categories: DEFAULT_CATEGORIES,
       payment: {
         qrisImage: '', // foto QRIS statis (path /uploads/...)
@@ -197,6 +200,22 @@ function load() {
 function migrate(db) {
   let changed = false;
   if (!db.settings) db.settings = {};
+  if (!Array.isArray(db.testimonials)) {
+    db.testimonials = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.admins)) {
+    db.admins = []; // akun admin (superadmin di-seed oleh server saat start)
+    changed = true;
+  }
+  if (typeof db.settings.address !== 'string') {
+    db.settings.address = '';
+    changed = true;
+  }
+  if (typeof db.settings.mapQuery !== 'string') {
+    db.settings.mapQuery = '';
+    changed = true;
+  }
   if (!Array.isArray(db.settings.categories) || db.settings.categories.length === 0) {
     db.settings.categories = DEFAULT_CATEGORIES;
     changed = true;

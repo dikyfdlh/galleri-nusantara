@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSession } from '../context/SessionContext.jsx';
 import { api } from '../api.js';
+import Testimonials from '../components/Testimonials.jsx';
+import LocationMap from '../components/LocationMap.jsx';
 
 export default function EntryPage() {
   const { customer, login } = useSession();
@@ -38,6 +40,7 @@ export default function EntryPage() {
   }
 
   return (
+    <>
     <div className="mx-auto grid max-w-6xl gap-10 px-4 py-12 md:grid-cols-2 md:items-center">
       <div>
         <span className="badge bg-batik-100 text-batik-700">Warisan Budaya Nusantara</span>
@@ -106,5 +109,8 @@ export default function EntryPage() {
         </button>
       </form>
     </div>
+    <Testimonials />
+    <LocationMap />
+    </>
   );
 }
