@@ -45,10 +45,10 @@ export default function EntryPage() {
       <div>
         <span className="badge bg-batik-100 text-batik-700">Warisan Budaya Nusantara</span>
         <h1 className="mt-4 text-4xl font-bold leading-tight text-batik-900 md:text-5xl">
-          Sewa Pakaian Adat <span className="text-batik-600">se-Indonesia</span> dengan Mudah
+          Pelopor Sewa Pakaian Adat <span className="text-batik-600">di Cimahi</span>
         </h1>
         <p className="mt-4 max-w-md text-batik-600">
-          Dari Ulos Batak hingga Payas Agung Bali. Pilih, jadwalkan lewat kalender,
+          Dari Ulos Batak hingga Payas Agung Bali. Pilih, jadwalkan lewat kalender dengan mudah,
           bayar dengan QRIS, dan ambil pakaian setelah pembayaran terverifikasi.
         </p>
         <ul className="mt-6 space-y-2 text-sm text-batik-700">

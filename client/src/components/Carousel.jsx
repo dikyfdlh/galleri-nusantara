@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import LogoGN from '../assets/Logo_GN.png';
 
 /** Gallery carousel untuk tiap produk. */
 export default function Carousel({ images = [], alt = '', heightClass = 'h-72' }) {
@@ -21,7 +22,7 @@ export default function Carousel({ images = [], alt = '', heightClass = 'h-72' }
             }}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-5xl">👘</div>
+          <img src={LogoGN} alt="Logo Galeri Nusantara"className="h-10 w-10 object-contain"/>
         )}
       </div>
 
