@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useSession } from '../context/SessionContext.jsx';
+import LogoGN from '../assets/Logo_GN.png';
 
 export default function Navbar() {
   const { customer, logout } = useSession();
@@ -9,7 +10,7 @@ export default function Navbar() {
     <header className="sticky top-0 z-30 border-b border-batik-100 bg-white/85 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         <Link to={customer ? '/katalog' : '/'} className="flex items-center gap-2">
-          <span className="text-2xl">👘</span>
+          <img src={LogoGN} alt="Logo Galeri Nusantara"className="h-10 w-10 object-contain"/>
           <div className="leading-tight">
             <div className="font-bold text-batik-800">Galleri Nusantara</div>
             <div className="text-[11px] text-batik-500">Rental Pakaian Adat</div>
